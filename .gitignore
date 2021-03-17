@@ -1,0 +1,12 @@
+.DS_Store
+*.tgz
+*.swp
+**/*.tgz
+*-index.yaml
+*.jks
+*-key.pem
+*.dec.*
+!ca.pem
+!*.enc.*
+!truststore.jks
+.idea
