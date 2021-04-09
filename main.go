@@ -1,5 +1,16 @@
 package main
 
+// import (
+// 	"fmt"
+// 	"context"
+// 	"os"
+// 	"path/filepath"
+// 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+// 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
+// 	"k8s.io/client-go/kubernetes"
+// 	"k8s.io/client-go/tools/clientcmd"
+// )
+
 import (
 	"context"
 	"encoding/base64"
@@ -8,6 +19,10 @@ import (
 
 	"github.com/spf13/viper"
 	"google.golang.org/api/container/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
+	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/clientcmd/api"
 )
 
@@ -17,61 +32,77 @@ type Message struct {
 }
 
 func main() {
+	v := viper.New()
 	// Read in all ENVs
-	viper.AutomaticEnv()
+	v.AutomaticEnv()
 
-	// Expect that these are set via environmental variable.  If not then fail with log message
-	if viper.Get("PROJECT_ID") == "" {
-		log.Fatal("PROJECT_ID must be set")
-	}
+	project := v.Get("PROJECT_ID")
+	cluster := v.Get("CLUSTER_NAME")
+	namespace := v.Get("NAMESPACE")
+	podlabel := v.Get("POD_LABEL")
 
-	if viper.Get("CLUSTER_NAME") == "" {
-		log.Fatal("CLUSTER_NAME must be set")
-	}
+	projectID := fmt.Sprint(project)
+	clusterName := fmt.Sprint(cluster)
+	nameSpace := fmt.Sprint(namespace)
+	podLabel := fmt.Sprint(podlabel)
 
-	if viper.Get("CLUSTER_NAMESPACE") == "" {
-		log.Fatal("CLUSTER_NAMESPACE must be set")
-	}
-
-	if viper.Get("POD_LABEL") == "" {
-		log.Fatal("POD_LABEL must be set")
+	if err := RemovePod(context.Background(), projectID, clusterName, nameSpace, podLabel); err != nil {
+		log.Fatal(err)
 	}
 
 }
 
-// func RemovePod(ctx context.Context, prjectId string, labelSelector metav1.LabelSelector) {
-// 	kubeConfig, err := AcquireContext(ctx, projectId)
-// 	if err != nil {
-// 		return err
-// 	}
+// RemovePod used the auth and provided variables to the remove nonfunctioning pod
+func RemovePod(ctx context.Context, projectID string, clusterID string, nameSpace string, podLabel string) error {
+	kubeConfig, err := AcquireContext(ctx, projectID, clusterID)
+	if err != nil {
+		return err
+	}
 
-// 	for clusterName := range kubeConfig.Clusters {
-// 		cfg, err := clientcmd.NewNonInteractiveClientConfig(*kubeConfig, clusterName, &clientcmd.ConfigOverrides{CurrentContext: clusterName}, nil).ClientConfig()
-// 		if err != nil {
-// 			return fmt.Errorf("failed to create k8s config: %w", err)
-// 		}
-// 		k8s, err := kubernetes.NewConfigFor(ctx)
-// 		if err != nil {
-// 			return fmt.Errorf("failed to init k8s client for cluster: %w", err)
-// 		}
+	for clusterName := range kubeConfig.Clusters {
+		cfg, err := clientcmd.NewNonInteractiveClientConfig(*kubeConfig, clusterName, &clientcmd.ConfigOverrides{CurrentContext: clusterName}, nil).ClientConfig()
+		if err != nil {
+			return fmt.Errorf("failed to create k8s cluster=%s config: %s", clusterName, err)
+		}
 
-// 		// podList, err := k8s.CoreV1().Pods.List(metav1.ListOptions{})
-// 		ns, err := k8s.CoreV1().Namespaces().List(metav1.ListOptions{})
-// 		if err != nil {
-// 			return fmt.Errorf("failed to list namespaces cluster=%s: %w", clusterName, err)
-// 		}
+		k8s, err := kubernetes.NewForConfig(cfg)
+		if err != nil {
+			return err
+		}
 
-// 		log.Printf("Namespaces found in cluster=%s", clusterName)
+		opts := metav1.ListOptions{
+			LabelSelector: podLabel,
+		}
 
-// 		for _, item := range ns.Items {
-// 			log.Println(item.Name)
-// 		}
 
-// 	}
-// }
+	  // delPod, err := k8s.CoreV1().Pods(nameSpace).Delete()
+		// if err != nil {
+		// 	return fmt.Errorf("failed to list pods cluster=%s: %s", clusterName, err)
+		// }
 
-// AcquireContext is used to setup GKE context and allow interacting with the clusters apis
-func AcquireContext(ctx context.Context, projectId string, zone string, clusterId string) (*api.Config, error) {
+
+		podList,err := k8s.CoreV1().Pods(nameSpace).List(ctx, opts)
+		if err != nil {
+			return fmt.Errorf("failed to list pods cluster=%s: %s", clusterName, err)
+		}
+
+		for _, podInfo := range (*podList).Items {
+			err := k8s.CoreV1().Pods(podInfo.Namespace).Delete(ctx, podInfo.Name, metav1.DeleteOptions{})
+			if err != nil {
+				log.Fatal(err)
+			}
+			// _, err := fmt.Printf("%v\n", podInfo.Name)
+			// if err != nil {
+			// 	return fmt.Errorf("something went wrong %v", err)
+			// }
+		}
+	}
+	return nil
+}
+
+//AcquireContext gotten from here https://bionic.fullstory.com/connect-to-google-kubernetes-with-gcp-credentials-and-pure-golang/
+//Used to setup GKE context and allow interacting with the clusters apis
+func AcquireContext(ctx context.Context, projectID string, clusterID string) (*api.Config, error) {
 	svc, err := container.NewService(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("container.NewService: %w", err)
@@ -85,13 +116,9 @@ func AcquireContext(ctx context.Context, projectId string, zone string, clusterI
 		Contexts:   map[string]*api.Context{},  //ref name to context config
 	}
 
-	resp, err := svc.Projects.Zones.Clusters.List(projectId, "-").Context(ctx).Do()
+	resp, err := svc.Projects.Zones.Clusters.List(projectID, "-").Context(ctx).Do()
 	if err != nil {
-		return nil, fmt.Errorf("clusters list project=%s: %w", projectId, err)
-	}
-
-	for i, p := range resp.Clusters {
-		return nil, fmt.Errorf("my msg %s %s", i, p)
+		return nil, fmt.Errorf("clusters list project=%s: %w", projectID, err)
 	}
 
 	for _, f := range resp.Clusters {
@@ -104,7 +131,7 @@ func AcquireContext(ctx context.Context, projectId string, zone string, clusterI
 			CertificateAuthorityData: cert,
 			Server:                   "https://" + f.Endpoint,
 		}
-		ret.Contexts[name] = &api.Contexts{
+		ret.Contexts[name] = &api.Context{
 			Cluster:  name,
 			AuthInfo: name,
 		}
@@ -117,5 +144,5 @@ func AcquireContext(ctx context.Context, projectId string, zone string, clusterI
 			},
 		}
 	}
-	return &ret, nil
+	return &ret, err
 }

@@ -5,6 +5,7 @@ go 1.16
 require (
 	github.com/spf13/viper v1.7.1
 	google.golang.org/api v0.13.0
+	k8s.io/apimachinery v0.0.0
 	k8s.io/client-go v0.0.0-00010101000000-000000000000
 )
 
